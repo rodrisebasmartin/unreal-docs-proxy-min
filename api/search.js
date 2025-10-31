@@ -1,7 +1,6 @@
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
-// 1) Endpoint principal (GET) y 2) fallback (POST al html mirror)
 const DDG_HTML_GET = (q) => `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}&kl=us-en`;
 const DDG_HTML_POST = "https://html.duckduckgo.com/html";
 
@@ -12,40 +11,61 @@ const ALLOWLIST = [
   "www.unrealengine.com"
 ];
 
-const isAllowed = (url) => {
+const isAllowed = (raw) => {
   try {
-    const { hostname } = new URL(url);
+    const { hostname } = new URL(raw);
     return ALLOWLIST.some(d => hostname.endsWith(d.replace(/^\*\./, "")));
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 };
+
+// DDG a veces devuelve /l/?uddg=<urlCodificada>. Decodificamos eso.
+function normalizeHref(href) {
+  if (!href) return null;
+  try {
+    // href directo (https://...)
+    if (/^https?:\/\//i.test(href)) return href;
+
+    // href redirect de DDG: /l/?uddg=<ENCODED_URL>
+    const u = new URL(href, "https://duckduckgo.com");
+    if (u.pathname === "/l/") {
+      const uddg = u.searchParams.get("uddg");
+      if (uddg) return decodeURIComponent(uddg);
+    }
+  } catch {
+    // ignoramos errores de URL
+  }
+  return null;
+}
 
 function parseDDGHtml(html) {
   const $ = cheerio.load(html);
   const out = [];
 
-  // Selector clásico
-  $("a.result__a").each((_, a) => {
+  // selectores principales
+  $("a.result__a, .result__title a").each((_, a) => {
     const title = $(a).text().trim();
-    const url = $(a).attr("href");
-    if (!url || !isAllowed(url)) return;
+    const normalized = normalizeHref($(a).attr("href"));
+    if (!normalized || !isAllowed(normalized)) return;
     const snippet =
-      $(a).parent().find(".result__snippet, .result__snippet.js-result-snippet").first().text().trim() ||
-      $(a).closest(".result").find(".result__snippet").first().text().trim() ||
+      $(a).closest(".result").find(".result__snippet, .result__snippet.js-result-snippet").first().text().trim() ||
+      $(a).parent().find(".result__snippet").first().text().trim() ||
       "";
-    out.push({ title, url, snippet });
+    out.push({ title, url: normalized, snippet });
   });
 
-  // Respaldo: enlaces en contenedor de resultados
+  // respaldo muy laxo
   if (out.length === 0) {
     $("#links a, .results a").each((_, a) => {
-      const url = $(a).attr("href");
       const title = $(a).text().trim();
-      if (!url || !title || !isAllowed(url)) return;
-      out.push({ title, url, snippet: "" });
+      const normalized = normalizeHref($(a).attr("href"));
+      if (!normalized || !title || !isAllowed(normalized)) return;
+      out.push({ title, url: normalized, snippet: "" });
     });
   }
 
-  // Evitar duplicados
+  // deduplicar
   const seen = new Set();
   return out.filter(r => {
     if (seen.has(r.url)) return false;
@@ -61,20 +81,20 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing or too short 'q'" });
     }
 
-    // 1) Intento con GET
+    // primer intento con GET
     let resp = await fetch(DDG_HTML_GET(q), {
-      headers: { "User-Agent": "UnrealDocsProxy/1.1 (+educational)" }
+      headers: { "User-Agent": "UnrealDocsProxy/1.2 (+educational)" }
     });
     let html = await resp.text();
     let results = parseDDGHtml(html);
 
-    // 2) Fallback con POST al mirror html
+    // fallback con POST (mirror HTML)
     if (results.length === 0) {
       const post = await fetch(DDG_HTML_POST, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "UnrealDocsProxy/1.1 (+educational)"
+          "User-Agent": "UnrealDocsProxy/1.2 (+educational)"
         },
         body: new URLSearchParams({ q, kl: "us-en" })
       });
