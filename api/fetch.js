@@ -26,7 +26,7 @@ export default async function handler(req, res) {
     const { url } = req.query;
     if (!url || !isAllowed(url)) return res.status(400).json({ error: "Missing or disallowed 'url'" });
 
-    const resp = await fetch(url, { headers: { "User-Agent": "UnrealDocsProxy/1.0" } });
+    const resp = await fetch(url, { headers: { "User-Agent": "UnrealDocsProxy/2.0" } });
     const html = await resp.text();
     const $ = cheerio.load(html);
     const title = $("title").first().text().trim();
