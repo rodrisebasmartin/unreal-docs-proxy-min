@@ -132,14 +132,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing or too short 'q'" });
     }
 
-    const queries = [];
-    if (only === "marketplace" || only === "all") {
-      queries.push(`site:${MARKET_HOST} /marketplace/ ${q}`);
-    }
-    if (only === "itch" || only === "all") {
-      // Focus itch on UE/unreal keywords to improve relevance
-      queries.push(`site:${ITCH_HOST} unreal ${q}`);
-    }
+const queries = [];
+if (only === "marketplace" || only === "all") {
+  // Dos estrategias: (1) con inurl:product y (2) fallback genérico
+  queries.push(`site:${MARKET_HOST} inurl:marketplace/product ${q}`);
+  queries.push(`site:${MARKET_HOST} inurl:marketplace ${q}`);
+}
+if (only === "itch" || only === "all") {
+  // Forzamos "unreal" para subir la relevancia en itch
+  queries.push(`site:${ITCH_HOST} unreal ${q}`);
+}
+
 
     const headers = { "User-Agent": "UnrealAssetsPlus/1.0 (+educational)" };
 
