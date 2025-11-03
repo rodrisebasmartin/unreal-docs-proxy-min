@@ -4,14 +4,14 @@ import * as cheerio from "cheerio";
 /**
  * /api/assets_plus
  * Keyless search across Unreal Marketplace + itch.io (assets/resources).
- * - Uses DuckDuckGo HTML (GET + POST mirror) with site filters.
- * - Decodes DDG redirect (?uddg=...).
- * - Filters and normalizes to product-like pages.
- * Query params:
- *   q: string (required) - search terms (e.g., "RPG icons", "sword animations", "VFX fire")
- *   only: "marketplace" | "itch" | "all" (default "all")
- *   price: "free" | "paid" | "any" (default "any") -- heuristic textual filter
- *   license: string (optional) - e.g., "cc0", "mit", "commercial" (heuristic textual match)
+ * - Usa resultados HTML de DuckDuckGo (GET + POST mirror) con filtros de sitio.
+ * - Decodifica redirecciones (?uddg=...).
+ * - Filtra y normaliza a páginas tipo "producto".
+ * Params:
+ *   q: string (required)         → términos de búsqueda (ej: "RPG icons", "sword animations", "VFX fire")
+ *   only: "marketplace"|"itch"|"all" (default "all")
+ *   price: "free"|"paid"|"any"  (default "any")  → heurístico textual
+ *   license: string (optional)   → filtro textual (ej: "cc0", "mit", "commercial")
  */
 
 const DDG_HTML_GET = (q) => `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}&kl=us-en`;
@@ -44,7 +44,7 @@ function parseDDGHtml(html) {
     out.push({ title: (title || "").trim(), url, snippet: (snippet || "").trim() });
   };
 
-  // Primary selectors
+  // Selectores principales
   $("a.result__a, .result__title a").each((_, a) => {
     const $a = $(a);
     const title = $a.text();
@@ -56,7 +56,15 @@ function parseDDGHtml(html) {
     add(title, href, snippet);
   });
 
-  // Fallback selectors
+  // Fallback de enlaces redirigidos /l/?uddg=
+  if (out.length === 0) {
+    $('a[href^="/l/?uddg="]').each((_, a) => {
+      const $a = $(a);
+      add($a.text(), $a.attr("href"), "");
+    });
+  }
+
+  // Fallback genérico
   if (out.length === 0) {
     $("#links a, .results a").each((_, a) => {
       const $a = $(a);
@@ -64,7 +72,7 @@ function parseDDGHtml(html) {
     });
   }
 
-  // dedupe by final URL
+  // Dedupe
   const seen = new Set();
   return out.filter(r => {
     if (!r.url) return false;
@@ -83,25 +91,25 @@ function inferStore(url) {
   return "other";
 }
 
+// ✅ Versión más permisiva (parche #1)
 function isProductLike(url) {
   try {
     const u = new URL(url);
 
     // Unreal Marketplace
     if (u.hostname === MARKET_HOST) {
-      // Aceptá cualquier URL dentro de /marketplace/ que NO sea listados/búsquedas/categorías
       const p = u.pathname.toLowerCase();
       if (!p.includes("/marketplace/")) return false;
-      // excluir páginas de búsqueda, categorías, listados
+      // excluir listados o búsquedas
       if (/(\/category\/|\/free|\/search|\/collections|\/page\/\d+)/.test(p)) return false;
-      return true; // producto o detalle válido
+      return true; // aceptamos detalle de producto y otras variantes válidas
     }
 
-    // itch.io: páginas de producto suelen ser subdominios (author.itch.io/project)
+    // itch.io: producto suele ser subdominio author.itch.io/<project>
     if (u.hostname.endsWith(ITCH_HOST)) {
       const isRoot = u.hostname === ITCH_HOST;
       const depth = u.pathname.split("/").filter(Boolean).length;
-      if (isRoot) return false;           // (itch.io/...) no es producto
+      if (isRoot) return false;                // itch.io/...
       if (u.pathname.startsWith("/t/")) return false; // tags
       return depth <= 1; // /project-name
     }
@@ -122,7 +130,7 @@ function matchLicense(text) {
   if (/\bmit\b/.test(t)) return "MIT (inferred)";
   if (/\bgpl\b/.test(t)) return "GPL (inferred)";
   if (/\bcommercial\s+use\b/.test(t)) return "Commercial Use (inferred)";
-  return null;
+  return "Unknown";
 }
 
 export default async function handler(req, res) {
@@ -132,19 +140,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing or too short 'q'" });
     }
 
-const queries = [];
-if (only === "marketplace" || only === "all") {
-  // Dos estrategias: (1) con inurl:product y (2) fallback genérico
-  queries.push(`site:${MARKET_HOST} inurl:marketplace/product ${q}`);
-  queries.push(`site:${MARKET_HOST} inurl:marketplace ${q}`);
-}
-if (only === "itch" || only === "all") {
-  // Forzamos "unreal" para subir la relevancia en itch
-  queries.push(`site:${ITCH_HOST} unreal ${q}`);
-}
+    // ✅ Queries ampliadas (parche #2)
+    const queries = [];
+    if (only === "marketplace" || only === "all") {
+      queries.push(`site:${MARKET_HOST} inurl:marketplace/product ${q}`);
+      queries.push(`site:${MARKET_HOST} inurl:marketplace ${q}`);
+    }
+    if (only === "itch" || only === "all") {
+      queries.push(`site:${ITCH_HOST} unreal ${q}`);
+    }
 
-
-    const headers = { "User-Agent": "UnrealAssetsPlus/1.0 (+educational)" };
+    const headers = { "User-Agent": "UnrealAssetsPlus/1.1 (+educational)" };
 
     const aggregate = [];
     for (const query of queries) {
@@ -164,14 +170,15 @@ if (only === "itch" || only === "all") {
         batch = parseDDGHtml(html);
       }
 
-      // Filter and normalize
+      // Filtrado y normalización
       for (const r of batch) {
         const store = inferStore(r.url);
         if (store === "other") continue;
         if (!isProductLike(r.url)) continue;
 
         const priceTag = inferPrice(r.title, r.snippet);
-        const lic = matchLicense(`${r.title} ${r.snippet}`) || "Unknown";
+        const lic = matchLicense(`${r.title} ${r.snippet}`);
+
         aggregate.push({
           title: r.title || r.url.split("/").pop().replace(/[-_]/g, " "),
           url: r.url,
@@ -182,19 +189,19 @@ if (only === "itch" || only === "all") {
       }
     }
 
-    // Optional filters
+    // Filtros opcionales
     let results = aggregate;
 
     if (price && price !== "any") {
       const wantFree = price.toLowerCase() === "free";
       results = results.filter(r => wantFree ? /free/i.test(r.price) : !/free/i.test(r.price));
     }
-    if (license) {
+    if (license && license.trim()) {
       const lic = license.toLowerCase();
-      results = results.filter(r => r.license.toLowerCase().includes(lic));
+      results = results.filter(r => (r.license || "unknown").toLowerCase().includes(lic));
     }
 
-    // Deduplicate by URL
+    // Dedupe + orden + corte
     const seen = new Set();
     results = results.filter(r => {
       if (seen.has(r.url)) return false;
@@ -202,7 +209,6 @@ if (only === "itch" || only === "all") {
       return true;
     });
 
-    // Sort: marketplace first, then itch; free before paid; keep at most 12
     results.sort((a,b) => {
       const storeRank = (s) => s === "marketplace" ? 0 : s === "itch" ? 1 : 2;
       const priceRank = (p) => /free/i.test(p) ? 0 : 1;
