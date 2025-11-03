@@ -86,14 +86,24 @@ function inferStore(url) {
 function isProductLike(url) {
   try {
     const u = new URL(url);
+
+    // Unreal Marketplace
     if (u.hostname === MARKET_HOST) {
-      // Prefer product pages: /marketplace/en-US/product/...
-      return /\/marketplace\/.+\/product\//i.test(u.pathname);
+      // Aceptá cualquier URL dentro de /marketplace/ que NO sea listados/búsquedas/categorías
+      const p = u.pathname.toLowerCase();
+      if (!p.includes("/marketplace/")) return false;
+      // excluir páginas de búsqueda, categorías, listados
+      if (/(\/category\/|\/free|\/search|\/collections|\/page\/\d+)/.test(p)) return false;
+      return true; // producto o detalle válido
     }
+
+    // itch.io: páginas de producto suelen ser subdominios (author.itch.io/project)
     if (u.hostname.endsWith(ITCH_HOST)) {
-      // itch product pages are usually like: https://author.itch.io/project-name
-      // exclude itch.io/tags or /games? queries
-      return u.hostname !== ITCH_HOST && !u.pathname.startsWith("/t/") && u.pathname.split("/").filter(Boolean).length === 1;
+      const isRoot = u.hostname === ITCH_HOST;
+      const depth = u.pathname.split("/").filter(Boolean).length;
+      if (isRoot) return false;           // (itch.io/...) no es producto
+      if (u.pathname.startsWith("/t/")) return false; // tags
+      return depth <= 1; // /project-name
     }
   } catch {}
   return false;
